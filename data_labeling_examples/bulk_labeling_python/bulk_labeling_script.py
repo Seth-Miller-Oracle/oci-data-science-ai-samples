@@ -3,9 +3,12 @@ import oci
 from config import *
 from bounding_box_config import *
 from classification_config import *
+from oci.data_labeling_service import DataLabelingManagementClient
+from oci.data_labeling_service.models import AddDatasetLabelsDetails, LabelSet
 from oci.data_labeling_service_dataplane.data_labeling_client import DataLabelingClient
 from oci.data_labeling_service_dataplane.models import GenericEntity, Label, CreateAnnotationDetails, NormalizedVertex, \
     BoundingPolygon, ImageObjectSelectionEntity
+from oci.data_labeling_service.models import Label as L
 import datetime
 import sys
 import re
@@ -22,10 +25,15 @@ def init_dls_dp_client(config, service_endpoint, retry_strategy):
     dls_client = DataLabelingClient(config=config, service_endpoint=service_endpoint, retry_strategy=retry_strategy)
     return dls_client
 
+def init_dls_mgmt_client(config, service_endpoint, retry_strategy):
+    dls_mgmt_client = DataLabelingManagementClient(config=config, service_endpoint=service_endpoint, retry_strategy=retry_strategy)
+    return dls_mgmt_client
+
 
 config_file = oci.config.from_file(CONFIG_FILE_PATH, CONFIG_PROFILE)
 retry_strategy = oci.retry.DEFAULT_RETRY_STRATEGY
 dls_dp_client = init_dls_dp_client(config_file, SERVICE_ENDPOINT_DP, retry_strategy)
+dls_mgmt_client = init_dls_mgmt_client(config_file, SERVICE_ENDPOINT_DP_MGMT, retry_strategy)
 
 
 def dls_list_records(compartment_id,page):
@@ -54,6 +62,26 @@ def dls_list_records(compartment_id,page):
     else:
         page = None
     return names, ids, len(ids), page
+
+
+def add_labels(label_set):
+    """ This function is used to add all the labels to the dataset
+
+    :param labels: a list of labels to add
+    :return: the response of add labels API call
+    """
+    labels_list = set(LABELS).difference(set(label_set))
+    labels_list = [L(name=lab) for lab in labels_list]
+    if len(labels_list) == 0:
+        return
+
+    try:
+        anno_response = dls_mgmt_client.add_dataset_labels(dataset_id=DATASET_ID,
+                            add_dataset_labels_details=AddDatasetLabelsDetails(label_set=LabelSet(items=labels_list)))
+    except Exception as error:
+        anno_response = error
+        print(anno_response)
+    return anno_response
 
 
 def dls_create_annotation(label, record_id, compartment_id):
@@ -264,6 +292,7 @@ def main():
     if response.status == 200:
         logger.info("Fetching Dataset Successful")
         compartment_id = response.data.compartment_id
+        label_set = [lab.name for lab in response.data.label_set.items]
         page = None
         start = time.perf_counter()
         num_records = LIST_RECORDS_LIMIT
@@ -278,6 +307,7 @@ def main():
             end = time.perf_counter()
             print(f'Finished in {round(end - start, 2)} second(s)')
         elif ANNOTATION_TYPE == "CLASSIFICATION":
+            add_labels(label_set)
             while True:
                 names, ids, num_records,page = dls_list_records(compartment_id=compartment_id,page=page)
                 pool.starmap(label_record, zip(names, ids, repeat(LABELING_ALGORITHM), repeat(compartment_id), repeat(logger)))
